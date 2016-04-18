@@ -21,12 +21,12 @@ module Log =
             member this.error s = _logger.Error(s)
 
     type PrettyLogger() =
-        let now() = (DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff"))
-        let log = printfn "%s %s %s" (now()) 
+        let now() = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fff")
+        let log = printfn "%s %s %s" 
             
         interface ILogger with  
-            member this.trace s = log "[TRACE]" s
-            member this.debug s = log "[DEBUG]" s
-            member this.info s = log "[INFO]" s
-            member this.warn s = log "[WARN]" s
-            member this.error s = log "[ERROR]" s
+            member this.trace s = log (now()) "[TRACE]" s 
+            member this.debug s = log (now()) "[DEBUG]" s
+            member this.info s = log (now()) "[INFO]" s 
+            member this.warn s = log (now()) "[WARN]" s 
+            member this.error s = log (now()) "[ERROR]" s 

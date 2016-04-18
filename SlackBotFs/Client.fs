@@ -12,10 +12,11 @@ open SlackBotFs.Models
 
 type RtmStart = JsonProvider<"rtmStartSample.json">
 
-type Client(token: string, logger: ILogger) =
+type Client(token: string, logger: ILogger, processMessage: Client -> Message -> unit) =
     let webSocket = new ClientWebSocket()
     let sendData (data: string) = 
         async {
+            sprintf "Send Data %s" data |> logger.debug
             let buffer = new ArraySegment<byte>(ASCIIEncoding.ASCII.GetBytes(data))
             do! webSocket.SendAsync(buffer, WebSocketMessageType.Text, true, CancellationToken.None) |> Async.AwaitTask
         }
@@ -35,9 +36,32 @@ type Client(token: string, logger: ILogger) =
             let ping = new Ping(id)
             do! ping.ToString() |> sendData
         }
-        
+
+    let rtm = Http.RequestString("https://slack.com/api/rtm.start", query=["token", token], httpMethod="GET") |> RtmStart.Parse
     
-    new(token) = Client(token, NLogger())
+    let user (u: RtmStart.User) =
+        { id = u.Id
+          name = u.Name
+          profile = 
+            { first_name = u.Profile.FirstName
+              last_name =  u.Profile.LastName
+              real_name = u.Profile.RealName
+              email = u.Profile.Email }}
+
+    let channel (c: RtmStart.Channel) =
+        { id = c.Id
+          name = c.Name 
+          creator = c.Creator
+          members = c.Members |> Array.toList }
+
+    let _users = rtm.Users |> Array.map(fun u-> u |> user)    
+    let _channels = rtm.Channels |> Array.map(fun c -> c |> channel)    
+            
+    new(token, processMessage) = Client(token, NLogger(), processMessage)
+
+    member this.users = _users
+
+    member this.channels = _channels
 
     member this.stop() =
          async {
@@ -47,7 +71,7 @@ type Client(token: string, logger: ILogger) =
             | ex -> printfn "slack client shutting down but not gracefully"
         }
         
-    member this.send (text: string) (channel: Channel) = 
+    member this.send (text: string) (channel: string) = 
         senderAgent.Post(Message(0, text, channel))
 
     member this.start() =         
@@ -68,6 +92,35 @@ type Client(token: string, logger: ILogger) =
                         return! receive ms
                 }
 
+            let hasType typeValue (properties: (string*JsonValue) []) = 
+                match (properties |> Array.tryFind (fun (s, j) -> s = "type")) with
+                | Some(s, j) -> j.AsString() = typeValue
+                | None -> false
+
+            let (|IsMessage|_|) j = 
+                match j with 
+                | JsonValue.Record(properties) when properties |> hasType "message" -> Some IsMessage
+                | _ -> None
+
+            let (|IsPong|_|) j = 
+                match j with 
+                | JsonValue.Record(properties) when properties |> hasType "pong" -> Some IsPong
+                | _ -> None
+
+            let processPong (pong: Pong) = 
+                async {
+                    do! Async.Sleep(5000)
+                    do! sendPing (pong.ReplyTo + 1)
+                }
+                |> Async.Start
+                Async.Sleep(1)
+
+            let processEvent (s: string) = 
+                match JsonValue.Parse(s) with
+                | IsMessage -> s |> Message.parse |> processMessage this; Async.Sleep(1000)
+                | IsPong -> s |> Pong.parse |> processPong 
+                | _ -> Async.Sleep(1000)
+
             let rec readEvents() = 
                 async {
                     logger.debug "trying to read a message"
@@ -75,7 +128,7 @@ type Client(token: string, logger: ILogger) =
                     let! data = receive ms
                     let s = System.Text.ASCIIEncoding.ASCII.GetString(data)
                     s |> sprintf "event received: %s" |> logger.info
-                    //s |> parseEvent |> emitEvent 
+                    do! s |> processEvent 
                     return! readEvents()
                 }
 
@@ -91,7 +144,7 @@ type Client(token: string, logger: ILogger) =
                     this.stop() |> ignore
             }
         
-        connect() |> Async.RunSynchronously
+        connect() 
 
 
             
